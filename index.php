@@ -1,891 +1,1478 @@
 <?php
-// Turn off errors for InfinityFree
-error_reporting(0);
-ini_set('display_errors', 0);
+// =============================================
+// WATTZ CHAT - Complete Private Messaging App
+// with Voice & Video Calls
+// =============================================
+
+// Configuration
+define('SUPABASE_URL', 'https://jccbtmwcvqooeppfbors.supabase.co');
+define('SUPABASE_ANON_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpjY2J0bXdjdnFvb2VwcGZib3JzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzExNjg3MDIsImV4cCI6MjA4Njc0NDcwMn0.mEoZFGpRGVRyrv29QLldCo9_ba65VnlNHr0677xgvtI');
+define('SUPABASE_SERVICE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpjY2J0bXdjdnFvb2VwcGZib3JzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTE2ODcwMiwiZXhwIjoyMDg2NzQ0NzAyfQ.dBYorOGX2JJFvXcYUgVwpXso7DUFgDmpOV0zYq1vxAs');
+define('DEFAULT_USER_ID', '00000000-0000-0000-0000-000000000001');
+define('DEFAULT_USERNAME', 'Me');
+define('DEFAULT_AVATAR', 'https://via.placeholder.com/100');
+
+// API Function
+function api_request($endpoint, $method = 'GET', $data = null, $useService = false) {
+    $url = SUPABASE_URL . '/rest/v1/' . $endpoint;
+    $key = $useService ? SUPABASE_SERVICE_KEY : SUPABASE_ANON_KEY;
+    
+    $headers = [
+        'apikey: ' . $key,
+        'Authorization: Bearer ' . $key,
+        'Content-Type: application/json',
+        'Prefer: return=representation'
+    ];
+    
+    $ch = curl_init();
+    
+    if ($method === 'GET' && is_array($data)) {
+        $params = [];
+        foreach ($data as $key => $value) {
+            $params[] = $key . '=' . urlencode($value);
+        }
+        if (!empty($params)) {
+            $url .= '?' . implode('&', $params);
+        }
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_HTTPGET, true);
+    } else {
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        if ($data) {
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        }
+    }
+    
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    return [
+        'data' => json_decode($response, true),
+        'code' => $httpCode,
+        'raw' => $response
+    ];
+}
+
+// Upload Function
+function upload_file($file, $bucket) {
+    $fileName = uniqid() . '_' . basename($file['name']);
+    $fileContent = file_get_contents($file['tmp_name']);
+    
+    $url = SUPABASE_URL . "/storage/v1/object/{$bucket}/{$fileName}";
+    
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'POST');
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Authorization: Bearer ' . SUPABASE_SERVICE_KEY,
+        'Content-Type: ' . $file['type']
+    ]);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $fileContent);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode === 200 || $httpCode === 201) {
+        return SUPABASE_URL . "/storage/v1/object/public/{$bucket}/{$fileName}";
+    }
+    
+    return false;
+}
+
+// Handle actions
+$action = $_GET['action'] ?? 'chats';
+$chat_id = $_GET['chat'] ?? null;
+$call_type = $_GET['call'] ?? null;
+$call_with = $_GET['with'] ?? null;
+
+// Handle API endpoints
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    header('Content-Type: application/json');
+    
+    // Send message
+    $data = json_decode(file_get_contents('php://input'), true);
+    
+    if (isset($data['message'])) {
+        $message_data = [
+            'sender_id' => DEFAULT_USER_ID,
+            'receiver_id' => $data['receiver_id'],
+            'content' => $data['message'],
+            'type' => 'text',
+            'created_at' => date('Y-m-d H:i:s')
+        ];
+        $result = api_request('messages', 'POST', $message_data, true);
+        echo json_encode(['success' => $result['code'] === 201]);
+        exit;
+    }
+    
+    // Upload media message
+    if (isset($_FILES['media'])) {
+        $url = upload_file($_FILES['media'], 'chat_media');
+        if ($url) {
+            $message_data = [
+                'sender_id' => DEFAULT_USER_ID,
+                'receiver_id' => $_POST['receiver_id'],
+                'media_url' => $url,
+                'type' => 'image',
+                'created_at' => date('Y-m-d H:i:s')
+            ];
+            $result = api_request('messages', 'POST', $message_data, true);
+            echo json_encode(['success' => $result['code'] === 201, 'url' => $url]);
+        } else {
+            echo json_encode(['success' => false]);
+        }
+        exit;
+    }
+    
+    // Upload voice message
+    if (isset($_FILES['voice'])) {
+        $url = upload_file($_FILES['voice'], 'voice_notes');
+        if ($url) {
+            $message_data = [
+                'sender_id' => DEFAULT_USER_ID,
+                'receiver_id' => $_POST['receiver_id'],
+                'media_url' => $url,
+                'type' => 'voice',
+                'created_at' => date('Y-m-d H:i:s')
+            ];
+            $result = api_request('messages', 'POST', $message_data, true);
+            echo json_encode(['success' => $result['code'] === 201, 'url' => $url]);
+        } else {
+            echo json_encode(['success' => false]);
+        }
+        exit;
+    }
+    
+    // Delete message
+    if (isset($data['delete_message'])) {
+        $result = api_request('messages', 'PATCH', [
+            'is_deleted' => true
+        ], true);
+        echo json_encode(['success' => true]);
+        exit;
+    }
+    
+    // Add reaction
+    if (isset($data['react'])) {
+        $msg_result = api_request('messages', 'GET', [
+            'id' => 'eq.' . $data['message_id'],
+            'select' => 'reactions'
+        ]);
+        
+        $reactions = $msg_result['data'][0]['reactions'] ?? [];
+        $reactions[] = ['emoji' => $data['emoji'], 'user_id' => DEFAULT_USER_ID];
+        
+        $result = api_request('messages', 'PATCH', [
+            'reactions' => $reactions
+        ], true);
+        echo json_encode(['success' => true]);
+        exit;
+    }
+}
+
+// Get all chats
+$chats_data = api_request('messages', 'GET', [
+    'select' => '*,sender:sender_id(username),receiver:receiver_id(username)',
+    'or' => '(sender_id.eq.' . DEFAULT_USER_ID . ',receiver_id.eq.' . DEFAULT_USER_ID . ')',
+    'order' => 'created_at.desc'
+]);
+$all_messages = $chats_data['data'] ?? [];
+
+// Group by chat partner
+$chat_partners = [];
+foreach ($all_messages as $msg) {
+    $partner_id = $msg['sender_id'] === DEFAULT_USER_ID ? $msg['receiver_id'] : $msg['sender_id'];
+    $partner_name = $msg['sender_id'] === DEFAULT_USER_ID ? 
+        ($msg['receiver']['username'] ?? 'User') : 
+        ($msg['sender']['username'] ?? 'User');
+    
+    if (!isset($chat_partners[$partner_id])) {
+        $chat_partners[$partner_id] = [
+            'id' => $partner_id,
+            'name' => $partner_name,
+            'last_message' => $msg['content'] ?? ($msg['type'] === 'image' ? '📷 Photo' : ($msg['type'] === 'voice' ? '🎤 Voice' : '')),
+            'last_time' => $msg['created_at'],
+            'type' => $msg['type']
+        ];
+    }
+}
+
+// Get messages for selected chat
+$messages = [];
+if ($chat_id) {
+    $messages_data = api_request('messages', 'GET', [
+        'select' => '*',
+        'or' => '(and(sender_id.eq.' . DEFAULT_USER_ID . ',receiver_id.eq.' . $chat_id . '),and(sender_id.eq.' . $chat_id . ',receiver_id.eq.' . DEFAULT_USER_ID . '))',
+        'is_deleted' => 'eq.false',
+        'order' => 'created_at.asc'
+    ]);
+    $messages = $messages_data['data'] ?? [];
+}
+
+// Get all users for new chat
+$users_data = api_request('profiles', 'GET', [
+    'select' => 'id,username,avatar_url',
+    'id' => 'neq.' . DEFAULT_USER_ID,
+    'limit' => '50'
+]);
+$users = $users_data['data'] ?? [];
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Moviez Ultra Infinity</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Wattz Chat <?= $chat_id ? '• Chat' : '' ?></title>
     <style>
-        * { -webkit-tap-highlight-color: transparent; }
-        body { background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        .story-ring { 
-            background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);
-            padding: 2px; border-radius: 50%; 
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
-        @keyframes heart { 
-            0% { transform: scale(0); } 
-            70% { transform: scale(1.2); } 
-            100% { transform: scale(1); } 
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: #000;
+            color: #fff;
+            height: 100vh;
+            overflow: hidden;
         }
-        .heart-animation { animation: heart 0.8s ease-out; }
-        .gradient-text { 
-            background: linear-gradient(45deg, #FF6B6B, #4ECDC4);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
+        
+        /* App Container */
+        .app {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            height: 100vh;
         }
-        .voice-wave { 
-            background: linear-gradient(90deg, 
-                rgba(255,255,255,0.8) 0%, 
-                rgba(255,255,255,0.4) 25%, 
-                rgba(255,255,255,0.6) 50%, 
-                rgba(255,255,255,0.3) 75%, 
-                rgba(255,255,255,0.7) 100%);
-            background-size: 200% 100%; 
-            animation: wave 1.5s linear infinite; 
+        
+        /* Sidebar */
+        .sidebar {
+            background: #000;
+            border-right: 1px solid #262626;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
-        @keyframes wave { 
-            0% { background-position: 200% 0; } 
-            100% { background-position: -200% 0; } 
+        
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #262626;
+        }
+        
+        .sidebar-header h1 {
+            font-size: 24px;
+            background: linear-gradient(45deg, #fff, #888);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 16px;
+        }
+        
+        .new-chat-btn {
+            width: 100%;
+            padding: 12px;
+            background: #0095f6;
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        
+        .chats-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+        
+        .chat-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px;
+            border-bottom: 1px solid #262626;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .chat-item:hover {
+            background: #1a1a1a;
+        }
+        
+        .chat-item.active {
+            background: #1a1a1a;
+        }
+        
+        .chat-avatar {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: linear-gradient(45deg, #f09433, #df2029);
+            padding: 2px;
+        }
+        
+        .chat-avatar img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            border: 2px solid #000;
+            object-fit: cover;
+        }
+        
+        .chat-info {
+            flex: 1;
+        }
+        
+        .chat-name {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        
+        .chat-preview {
+            color: #888;
+            font-size: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 200px;
+        }
+        
+        .chat-time {
+            color: #888;
+            font-size: 12px;
+        }
+        
+        /* Chat Area */
+        .chat-area {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background: #000;
+        }
+        
+        .chat-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid #262626;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            background: rgba(0,0,0,0.9);
+            backdrop-filter: blur(10px);
+        }
+        
+        .chat-header-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+        
+        .chat-header-info {
+            flex: 1;
+        }
+        
+        .chat-header-name {
+            font-weight: 600;
+            font-size: 16px;
+        }
+        
+        .chat-header-status {
+            color: #888;
+            font-size: 13px;
+        }
+        
+        .chat-header-actions {
+            display: flex;
+            gap: 20px;
+        }
+        
+        .chat-header-actions i {
+            font-size: 22px;
+            cursor: pointer;
+            color: #fff;
+        }
+        
+        /* Messages */
+        .messages-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            background: #000;
+        }
+        
+        .message {
+            max-width: 65%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            position: relative;
+            word-wrap: break-word;
+            animation: fadeIn 0.3s;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .message.sent {
+            align-self: flex-end;
+            background: #0095f6;
+            border-bottom-right-radius: 4px;
+        }
+        
+        .message.received {
+            align-self: flex-start;
+            background: #262626;
+            border-bottom-left-radius: 4px;
+        }
+        
+        .message-image {
+            max-width: 250px;
+            border-radius: 12px;
+            cursor: pointer;
+        }
+        
+        .message-voice {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 200px;
+        }
+        
+        .voice-play-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        
+        .voice-wave {
+            flex: 1;
+            height: 30px;
+            background: linear-gradient(90deg, #fff 0%, #888 100%);
+            mask: linear-gradient(90deg, transparent 0%, #fff 20%, #fff 80%, transparent 100%);
+        }
+        
+        .message-time {
+            font-size: 11px;
+            color: rgba(255,255,255,0.6);
+            margin-top: 4px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .message-reactions {
+            position: absolute;
+            bottom: -20px;
+            right: 0;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 20px;
+            padding: 4px 8px;
+            font-size: 12px;
+            display: flex;
+            gap: 4px;
+        }
+        
+        /* Input Area */
+        .input-area {
+            padding: 16px 20px;
+            border-top: 1px solid #262626;
+            background: #000;
+        }
+        
+        .input-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: #1a1a1a;
+            border-radius: 24px;
+            padding: 8px 16px;
+        }
+        
+        .input-wrapper i {
+            font-size: 22px;
+            color: #888;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+        
+        .input-wrapper i:hover {
+            color: #0095f6;
+        }
+        
+        .input-wrapper input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #fff;
+            font-size: 16px;
+            padding: 8px 0;
+            outline: none;
+        }
+        
+        .input-wrapper input::placeholder {
+            color: #888;
+        }
+        
+        .recording-indicator {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            background: #1a1a1a;
+            border-radius: 24px;
+            color: #ff3b30;
+        }
+        
+        .recording-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ff3b30;
+            animation: pulse 1s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+        
+        /* Call Modal */
+        .call-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.95);
+            z-index: 2000;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-between;
+            padding: 60px 20px;
+        }
+        
+        .call-modal.active {
+            display: flex;
+        }
+        
+        .call-avatar {
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            background: linear-gradient(45deg, #f09433, #df2029);
+            padding: 3px;
+            animation: pulse 2s infinite;
+        }
+        
+        .call-avatar img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            border: 3px solid #000;
+            object-fit: cover;
+        }
+        
+        .call-status {
+            font-size: 24px;
+            font-weight: 600;
+            margin-top: 20px;
+        }
+        
+        .call-timer {
+            font-size: 20px;
+            color: #888;
+            margin-top: 10px;
+        }
+        
+        .call-video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: none;
+        }
+        
+        .call-video.active {
+            display: block;
+        }
+        
+        .local-video {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 150px;
+            height: 200px;
+            border-radius: 12px;
+            border: 2px solid #fff;
+            object-fit: cover;
+            display: none;
+        }
+        
+        .local-video.active {
+            display: block;
+        }
+        
+        .call-controls {
+            display: flex;
+            gap: 30px;
+            margin-top: 40px;
+        }
+        
+        .call-btn {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 24px;
+        }
+        
+        .call-btn.end {
+            background: #ff3b30;
+        }
+        
+        .call-btn.accept {
+            background: #34c759;
+        }
+        
+        .call-btn.muted {
+            background: #ff3b30;
+        }
+        
+        /* Context Menu */
+        .context-menu {
+            position: fixed;
+            background: #1a1a1a;
+            border-radius: 12px;
+            padding: 8px 0;
+            min-width: 180px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            z-index: 1500;
+            display: none;
+        }
+        
+        .context-menu.active {
+            display: block;
+        }
+        
+        .menu-item {
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .menu-item:hover {
+            background: #262626;
+        }
+        
+        .menu-item.danger {
+            color: #ff3b30;
+        }
+        
+        /* Emoji Picker */
+        .emoji-picker {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #1a1a1a;
+            border-radius: 30px;
+            padding: 12px;
+            display: none;
+            gap: 8px;
+            z-index: 1600;
+            border: 1px solid #333;
+        }
+        
+        .emoji-picker.active {
+            display: flex;
+        }
+        
+        .emoji-picker span {
+            font-size: 28px;
+            cursor: pointer;
+            padding: 4px;
+            transition: transform 0.2s;
+        }
+        
+        .emoji-picker span:hover {
+            transform: scale(1.2);
+        }
+        
+        /* New Chat Modal */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.9);
+            z-index: 2000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal.active {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: #1a1a1a;
+            border-radius: 16px;
+            width: 90%;
+            max-width: 400px;
+            max-height: 80vh;
+            overflow: hidden;
+        }
+        
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid #262626;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .modal-header h2 {
+            font-size: 20px;
+        }
+        
+        .modal-header i {
+            font-size: 24px;
+            cursor: pointer;
+        }
+        
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            max-height: 60vh;
+        }
+        
+        .user-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .user-item:hover {
+            background: #262626;
+        }
+        
+        .user-avatar {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+        
+        .user-name {
+            font-weight: 600;
+        }
+        
+        /* Mobile */
+        @media (max-width: 768px) {
+            .app {
+                grid-template-columns: 1fr;
+            }
+            
+            .sidebar {
+                display: <?= $chat_id ? 'none' : 'block' ?>;
+            }
+            
+            .chat-area {
+                display: <?= $chat_id ? 'flex' : 'none' ?>;
+            }
+            
+            .back-btn {
+                display: block !important;
+            }
         }
     </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
-<body class="h-screen overflow-hidden">
-    <!-- Loading Screen -->
-    <div id="loading" class="fixed inset-0 bg-black z-50 flex items-center justify-center">
-        <div class="text-center">
-            <div class="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-            <p class="mt-4 text-xl">Moviez Ultra</p>
-            <p class="text-gray-400 mt-2">Starting your movie experience...</p>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h1>Wattz Chat</h1>
+                <button class="new-chat-btn" onclick="openNewChatModal()">
+                    <i class="fa-solid fa-plus"></i> New Chat
+                </button>
+            </div>
+            
+            <div class="chats-list">
+                <?php if (empty($chat_partners)): ?>
+                    <div style="text-align: center; padding: 40px; color: #888;">
+                        <i class="fa-regular fa-message" style="font-size: 48px; margin-bottom: 16px;"></i>
+                        <p>No chats yet</p>
+                        <p style="font-size: 14px; margin-top: 8px;">Start a new conversation</p>
+                    </div>
+                <?php else: ?>
+                    <?php foreach ($chat_partners as $partner_id => $chat): ?>
+                        <div class="chat-item <?= $chat_id === $partner_id ? 'active' : '' ?>" 
+                             onclick="window.location.href='?chat=<?= $partner_id ?>'">
+                            <div class="chat-avatar">
+                                <img src="<?= DEFAULT_AVATAR ?>" alt="">
+                            </div>
+                            <div class="chat-info">
+                                <div class="chat-name"><?= htmlspecialchars($chat['name']) ?></div>
+                                <div class="chat-preview">
+                                    <?php if ($chat['type'] === 'image'): ?>
+                                        📷 Photo
+                                    <?php elseif ($chat['type'] === 'voice'): ?>
+                                        🎤 Voice message
+                                    <?php else: ?>
+                                        <?= htmlspecialchars($chat['last_message']) ?>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <div class="chat-time"><?= date('H:i', strtotime($chat['last_time'])) ?></div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
+        </div>
+        
+        <!-- Chat Area -->
+        <div class="chat-area">
+            <?php if ($chat_id): 
+                $partner_name = '';
+                foreach ($chat_partners as $pid => $p) {
+                    if ($pid === $chat_id) {
+                        $partner_name = $p['name'];
+                        break;
+                    }
+                }
+            ?>
+                <div class="chat-header">
+                    <i class="fa-solid fa-arrow-left back-btn" onclick="window.location.href='?'" 
+                       style="display: none; font-size: 20px; cursor: pointer;"></i>
+                    <img src="<?= DEFAULT_AVATAR ?>" class="chat-header-avatar">
+                    <div class="chat-header-info">
+                        <div class="chat-header-name"><?= htmlspecialchars($partner_name) ?></div>
+                        <div class="chat-header-status">Online</div>
+                    </div>
+                    <div class="chat-header-actions">
+                        <i class="fa-solid fa-phone" onclick="startCall('audio', '<?= $chat_id ?>')"></i>
+                        <i class="fa-solid fa-video" onclick="startCall('video', '<?= $chat_id ?>')"></i>
+                    </div>
+                </div>
+                
+                <div class="messages-container" id="messagesContainer">
+                    <?php foreach ($messages as $msg): ?>
+                        <?php 
+                        $isSent = $msg['sender_id'] === DEFAULT_USER_ID;
+                        $reactions = json_decode($msg['reactions'] ?? '[]', true);
+                        ?>
+                        <div class="message <?= $isSent ? 'sent' : 'received' ?>" 
+                             data-id="<?= $msg['id'] ?>"
+                             oncontextmenu="showContextMenu(event, '<?= $msg['id'] ?>', '<?= $msg['type'] ?>', '<?= $msg['media_url'] ?? '' ?>')">
+                            
+                            <?php if ($msg['type'] === 'image'): ?>
+                                <img src="<?= $msg['media_url'] ?>" class="message-image" onclick="window.open(this.src)">
+                            <?php elseif ($msg['type'] === 'voice'): ?>
+                                <div class="message-voice">
+                                    <div class="voice-play-btn" onclick="playVoice(this, '<?= $msg['media_url'] ?>')">
+                                        <i class="fa-solid fa-play"></i>
+                                    </div>
+                                    <div class="voice-wave"></div>
+                                    <span>0:30</span>
+                                </div>
+                            <?php else: ?>
+                                <?= htmlspecialchars($msg['content']) ?>
+                            <?php endif; ?>
+                            
+                            <div class="message-time">
+                                <?= date('H:i', strtotime($msg['created_at'])) ?>
+                                <?php if ($isSent): ?>
+                                    <i class="fa-regular fa-check-circle"></i>
+                                <?php endif; ?>
+                            </div>
+                            
+                            <?php if (!empty($reactions)): ?>
+                                <div class="message-reactions">
+                                    <?php foreach ($reactions as $r): ?>
+                                        <span><?= $r['emoji'] ?></span>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+                
+                <div class="input-area">
+                    <div class="input-wrapper" id="inputWrapper">
+                        <i class="fa-regular fa-image" onclick="document.getElementById('mediaInput').click()"></i>
+                        <i class="fa-solid fa-microphone" onclick="startVoiceRecording()" id="voiceBtn"></i>
+                        <input type="text" id="messageInput" placeholder="Message..." 
+                               onkeypress="if(event.key==='Enter') sendMessage()">
+                        <i class="fa-regular fa-paper-plane" onclick="sendMessage()"></i>
+                    </div>
+                    
+                    <div class="recording-indicator" id="recordingIndicator" style="display: none;">
+                        <span class="recording-dot"></span>
+                        <span>Recording... <span id="recordingTime">0:00</span></span>
+                        <i class="fa-regular fa-circle-stop" onclick="stopVoiceRecording()" style="margin-left: auto;"></i>
+                    </div>
+                </div>
+                
+                <input type="file" id="mediaInput" accept="image/*" style="display: none" onchange="sendMedia(this)">
+                
+            <?php else: ?>
+                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #888; flex-direction: column; gap: 20px;">
+                    <i class="fa-regular fa-message" style="font-size: 64px;"></i>
+                    <h2>Your messages</h2>
+                    <p style="text-align: center; max-width: 300px;">Send private photos and messages to a friend or start a voice/video call</p>
+                    <button class="new-chat-btn" onclick="openNewChatModal()" style="width: auto; padding: 12px 24px;">New Message</button>
+                </div>
+            <?php endif; ?>
         </div>
     </div>
-
-    <!-- Main App -->
-    <div id="app" class="hidden">
-        <div class="flex h-screen max-w-6xl mx-auto">
-            <!-- Left Sidebar -->
-            <div class="w-20 md:w-64 border-r border-gray-800 hidden md:flex flex-col py-6 px-2 md:px-6">
-                <div class="mb-8 px-2">
-                    <h1 class="text-2xl font-bold gradient-text hidden md:block">Moviez Ultra</h1>
-                    <div class="md:hidden text-center"><i class="fas fa-film text-2xl gradient-text"></i></div>
-                </div>
-                <nav class="space-y-4 flex-1">
-                    <button onclick="switchTab('feed')" class="tab-btn w-full text-left py-3 px-4 rounded-lg hover:bg-gray-900 flex items-center space-x-3 text-lg bg-gray-900">
-                        <i class="fas fa-home w-6"></i><span class="hidden md:block">Feed</span>
-                    </button>
-                    <button onclick="switchTab('reels')" class="tab-btn w-full text-left py-3 px-4 rounded-lg hover:bg-gray-900 flex items-center space-x-3 text-lg">
-                        <i class="fas fa-play w-6"></i><span class="hidden md:block">Reels</span>
-                    </button>
-                    <button onclick="switchTab('chat')" class="tab-btn w-full text-left py-3 px-4 rounded-lg hover:bg-gray-900 flex items-center space-x-3 text-lg">
-                        <i class="fas fa-comment w-6"></i><span class="hidden md:block">Chat</span>
-                        <span id="unread-count" class="bg-red-500 text-xs px-2 py-1 rounded-full hidden">0</span>
-                    </button>
-                    <button onclick="switchTab('profile')" class="tab-btn w-full text-left py-3 px-4 rounded-lg hover:bg-gray-900 flex items-center space-x-3 text-lg">
-                        <i class="fas fa-user w-6"></i><span class="hidden md:block">Profile</span>
-                    </button>
-                </nav>
-            </div>
-
-            <!-- Main Content -->
-            <div class="flex-1 flex flex-col h-screen">
-                <!-- Mobile Header -->
-                <div class="md:hidden flex items-center justify-between px-4 py-3 border-b border-gray-800">
-                    <h1 class="text-xl font-bold gradient-text">Moviez Ultra</h1>
-                    <div class="flex items-center space-x-4">
-                        <button onclick="switchTab('chat')"><i class="fas fa-comment text-xl"></i></button>
-                        <button onclick="switchTab('profile')"><i class="fas fa-user text-xl"></i></button>
-                    </div>
-                </div>
-
-                <!-- Tab Contents -->
-                <div class="flex-1 overflow-hidden">
-                    <!-- Feed Tab -->
-                    <div id="feed-tab" class="tab-content h-full">
-                        <div class="stories-section border-b border-gray-800 px-4 py-3 overflow-x-auto">
-                            <div class="flex space-x-4">
-                                <div class="flex flex-col items-center">
-                                    <div class="story-ring">
-                                        <div class="w-16 h-16 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center">
-                                            <i class="fas fa-plus text-white"></i>
-                                        </div>
-                                    </div>
-                                    <span class="text-xs mt-1">Your Story</span>
-                                </div>
-                                <div id="stories-container" class="flex space-x-4"></div>
-                            </div>
-                        </div>
-                        <div id="feed-container" class="h-[calc(100%-80px)] overflow-y-auto p-4"></div>
-                    </div>
-
-                    <!-- Reels Tab -->
-                    <div id="reels-tab" class="tab-content h-full hidden">
-                        <div class="h-full relative bg-black">
-                            <div id="reels-container" class="h-full overflow-y-auto snap-y snap-mandatory"></div>
-                            <div class="absolute right-4 bottom-20 space-y-2">
-                                <button id="mute-btn" class="block text-white bg-black/50 rounded-full p-3">
-                                    <i class="fas fa-volume-up"></i>
-                                </button>
-                                <button id="pause-btn" class="block text-white bg-black/50 rounded-full p-3">
-                                    <i class="fas fa-pause"></i>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Chat Tab -->
-                    <div id="chat-tab" class="tab-content h-full hidden flex flex-col">
-                        <div class="border-b border-gray-800 p-4">
-                            <h2 class="text-xl font-bold">Movie Chat</h2>
-                            <p class="text-gray-400 text-sm">Talk about movies with fans worldwide</p>
-                        </div>
-                        
-                        <!-- Chat Selection -->
-                        <div id="chat-list" class="flex-1 overflow-y-auto p-4 space-y-2">
-                            <div class="p-3 bg-gray-900 rounded-lg hover:bg-gray-800 cursor-pointer" onclick="openChat('public')">
-                                <div class="flex items-center justify-between">
-                                    <div class="flex items-center space-x-3">
-                                        <div class="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center">
-                                            <i class="fas fa-users"></i>
-                                        </div>
-                                        <div>
-                                            <h4 class="font-bold">Public Chat Room</h4>
-                                            <p class="text-sm text-gray-400">Join the conversation</p>
-                                        </div>
-                                    </div>
-                                    <span class="text-xs text-gray-400">100+ online</span>
-                                </div>
-                            </div>
-                            
-                            <div class="p-3 bg-gray-900 rounded-lg hover:bg-gray-800 cursor-pointer" onclick="openChat('cinema_fans')">
-                                <div class="flex items-center space-x-3">
-                                    <div class="w-10 h-10 rounded-full bg-purple-600 flex items-center justify-center">
-                                        <i class="fas fa-film"></i>
-                                    </div>
-                                    <div>
-                                        <h4 class="font-bold">Cinema Fans</h4>
-                                        <p class="text-sm text-gray-400">Discuss latest releases</p>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Active Chat (hidden by default) -->
-                        <div id="active-chat" class="h-full hidden flex flex-col">
-                            <div class="border-b border-gray-800 p-4 flex items-center space-x-3">
-                                <button onclick="closeChat()" class="md:hidden">
-                                    <i class="fas fa-arrow-left"></i>
-                                </button>
-                                <div class="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center">
-                                    <i class="fas fa-users"></i>
-                                </div>
-                                <div>
-                                    <h3 id="chat-room-name" class="font-bold">Public Chat</h3>
-                                    <p id="chat-status" class="text-sm text-gray-400">Online</p>
-                                </div>
-                            </div>
-                            
-                            <div id="messages-container" class="flex-1 overflow-y-auto p-4 space-y-3"></div>
-                            
-                            <div class="border-t border-gray-800 p-4">
-                                <div class="flex items-center space-x-2">
-                                    <button onclick="toggleGiphy()" class="p-2 rounded-full hover:bg-gray-800">
-                                        <i class="fas fa-gift text-purple-400"></i>
-                                    </button>
-                                    <button id="voice-btn" class="p-2 rounded-full hover:bg-gray-800">
-                                        <i class="fas fa-microphone text-red-400"></i>
-                                    </button>
-                                    <div class="flex-1 relative">
-                                        <input type="text" id="message-input" 
-                                               class="w-full bg-gray-900 border border-gray-700 rounded-full py-3 px-5 pr-12 focus:outline-none focus:border-blue-500"
-                                               placeholder="Type a message...">
-                                        <button id="send-btn" class="absolute right-3 top-2.5 text-blue-500">
-                                            <i class="fas fa-paper-plane"></i>
-                                        </button>
-                                    </div>
-                                </div>
-                                
-                                <!-- Voice Recording UI -->
-                                <div id="voice-recording-ui" class="mt-3 hidden items-center justify-between">
-                                    <div class="flex items-center space-x-3">
-                                        <div class="voice-wave w-24 h-8 rounded"></div>
-                                        <span id="recording-time" class="text-sm">0:00</span>
-                                    </div>
-                                    <div class="flex space-x-2">
-                                        <button id="cancel-recording" class="px-4 py-1 bg-red-600 rounded">Cancel</button>
-                                        <button id="send-recording" class="px-4 py-1 bg-green-600 rounded">Send</button>
-                                    </div>
-                                </div>
-                                
-                                <!-- Giphy Drawer -->
-                                <div id="giphy-drawer" class="mt-3 hidden bg-gray-900 rounded-lg p-3">
-                                    <div class="flex justify-between mb-2">
-                                        <input type="text" id="giphy-search" 
-                                               class="flex-1 bg-gray-800 border border-gray-700 rounded py-2 px-3 mr-2"
-                                               placeholder="Search GIFs...">
-                                        <button onclick="toggleGiphy()" class="px-3 bg-gray-700 rounded">
-                                            <i class="fas fa-times"></i>
-                                        </button>
-                                    </div>
-                                    <div id="giphy-results" class="grid grid-cols-3 gap-2 max-h-40 overflow-y-auto"></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Profile Tab -->
-                    <div id="profile-tab" class="tab-content h-full hidden overflow-y-auto p-6">
-                        <div class="max-w-md mx-auto">
-                            <div class="text-center mb-8">
-                                <div class="relative mx-auto w-32 h-32 mb-4">
-                                    <div class="w-full h-full rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center text-4xl">
-                                        <i class="fas fa-user"></i>
-                                    </div>
-                                    <button onclick="uploadAvatar()" class="absolute bottom-0 right-0 bg-blue-600 rounded-full p-2">
-                                        <i class="fas fa-camera"></i>
-                                    </button>
-                                </div>
-                                <h1 id="profile-username" class="text-2xl font-bold">@movielover</h1>
-                                <p id="profile-bio" class="text-gray-400 mt-2">Movie enthusiast & critic</p>
-                            </div>
-                            
-                            <div class="grid grid-cols-3 gap-4 text-center mb-8">
-                                <div class="bg-gray-900 rounded-lg p-4">
-                                    <div class="text-2xl font-bold" id="post-count">12</div>
-                                    <div class="text-gray-400 text-sm">Posts</div>
-                                </div>
-                                <div class="bg-gray-900 rounded-lg p-4">
-                                    <div class="text-2xl font-bold" id="followers-count">245</div>
-                                    <div class="text-gray-400 text-sm">Followers</div>
-                                </div>
-                                <div class="bg-gray-900 rounded-lg p-4">
-                                    <div class="text-2xl font-bold" id="following-count">156</div>
-                                    <div class="text-gray-400 text-sm">Following</div>
-                                </div>
-                            </div>
-                            
-                            <div class="space-y-4">
-                                <button onclick="editProfile()" class="w-full py-3 bg-gray-900 rounded-lg hover:bg-gray-800">
-                                    <i class="fas fa-edit mr-2"></i> Edit Profile
-                                </button>
-                                <button onclick="showSettings()" class="w-full py-3 bg-gray-900 rounded-lg hover:bg-gray-800">
-                                    <i class="fas fa-cog mr-2"></i> Settings
-                                </button>
-                                <button onclick="switchTab('feed')" class="w-full py-3 bg-blue-600 rounded-lg hover:bg-blue-700">
-                                    <i class="fas fa-film mr-2"></i> Browse Movies
-                                </button>
-                            </div>
-                            
-                            <!-- Edit Profile Form -->
-                            <div id="edit-profile-form" class="mt-6 hidden bg-gray-900 rounded-lg p-6">
-                                <h3 class="text-xl font-bold mb-4">Edit Profile</h3>
-                                <div class="space-y-4">
-                                    <div>
-                                        <label class="block text-sm mb-1">Username</label>
-                                        <input type="text" id="edit-username" 
-                                               class="w-full bg-gray-800 border border-gray-700 rounded py-2 px-3"
-                                               value="movielover">
-                                    </div>
-                                    <div>
-                                        <label class="block text-sm mb-1">Bio</label>
-                                        <textarea id="edit-bio" 
-                                                  class="w-full bg-gray-800 border border-gray-700 rounded py-2 px-3 h-24">Movie enthusiast & critic</textarea>
-                                    </div>
-                                    <div class="flex justify-end space-x-2">
-                                        <button onclick="cancelEdit()" class="px-4 py-2 border border-gray-600 rounded">
-                                            Cancel
-                                        </button>
-                                        <button onclick="saveProfile()" class="px-4 py-2 bg-blue-600 rounded">
-                                            Save Changes
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+    
+    <!-- Context Menu -->
+    <div class="context-menu" id="contextMenu">
+        <div class="menu-item" onclick="replyToMessage()">
+            <i class="fa-regular fa-reply"></i> Reply
         </div>
-
-        <!-- Movie Trailer Modal -->
-        <div id="trailer-modal" class="fixed inset-0 bg-black bg-opacity-90 z-50 hidden flex items-center justify-center p-4">
-            <div class="relative w-full max-w-4xl">
-                <button onclick="closeTrailer()" class="absolute -top-10 right-0 text-white text-2xl">
-                    <i class="fas fa-times"></i>
-                </button>
-                <div id="youtube-player" class="w-full aspect-video bg-black rounded-lg overflow-hidden">
-                    <iframe id="youtube-iframe" class="w-full h-full" 
-                            frameborder="0" allowfullscreen
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture">
-                    </iframe>
-                </div>
-            </div>
+        <div class="menu-item" onclick="copyMessage()">
+            <i class="fa-regular fa-copy"></i> Copy
         </div>
-
-        <!-- Voice Player Modal -->
-        <div id="voice-player-modal" class="fixed inset-0 bg-black bg-opacity-90 z-50 hidden flex items-center justify-center">
-            <div class="bg-gray-900 rounded-lg p-6 max-w-md w-full">
-                <h3 class="text-xl font-bold mb-4">Voice Message</h3>
-                <div class="voice-wave w-full h-12 rounded mb-4"></div>
-                <div class="flex items-center justify-center space-x-4">
-                    <button id="play-voice" class="p-3 rounded-full bg-blue-600">
-                        <i class="fas fa-play"></i>
-                    </button>
-                    <button id="pause-voice" class="p-3 rounded-full bg-gray-700">
-                        <i class="fas fa-pause"></i>
-                    </button>
-                    <span id="voice-duration" class="text-lg">0:00</span>
+        <div class="menu-item" onclick="openEmojiPicker()">
+            <i class="fa-regular fa-face-smile"></i> React
+        </div>
+        <div class="menu-item" id="downloadOption" onclick="downloadMedia()">
+            <i class="fa-regular fa-circle-down"></i> Download
+        </div>
+        <div class="menu-item danger" onclick="deleteMessage()">
+            <i class="fa-regular fa-trash-can"></i> Delete
+        </div>
+    </div>
+    
+    <!-- Emoji Picker -->
+    <div class="emoji-picker" id="emojiPicker">
+        <span onclick="addReaction('❤️')">❤️</span>
+        <span onclick="addReaction('😂')">😂</span>
+        <span onclick="addReaction('😮')">😮</span>
+        <span onclick="addReaction('😢')">😢</span>
+        <span onclick="addReaction('👍')">👍</span>
+        <span onclick="addReaction('🔥')">🔥</span>
+        <span onclick="addReaction('🎉')">🎉</span>
+    </div>
+    
+    <!-- New Chat Modal -->
+    <div class="modal" id="newChatModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>New Chat</h2>
+                <i class="fa-solid fa-xmark" onclick="closeNewChatModal()"></i>
+            </div>
+            <div class="modal-body">
+                <input type="text" placeholder="Search users..." style="width: 100%; padding: 12px; background: #262626; border: none; border-radius: 8px; color: #fff; margin-bottom: 20px;" 
+                       onkeyup="searchUsers(this.value)" id="userSearch">
+                
+                <div id="usersList">
+                    <?php foreach ($users as $user): ?>
+                        <div class="user-item" onclick="startChat('<?= $user['id'] ?>')">
+                            <img src="<?= $user['avatar_url'] ?? DEFAULT_AVATAR ?>" class="user-avatar">
+                            <div class="user-info">
+                                <div class="user-name"><?= htmlspecialchars($user['username']) ?></div>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
                 </div>
-                <button onclick="closeVoicePlayer()" class="mt-6 w-full py-2 border border-gray-600 rounded">
-                    Close
-                </button>
             </div>
         </div>
     </div>
+    
+    <!-- Call Modal -->
+    <div class="call-modal" id="callModal">
+        <video id="remoteVideo" class="call-video" autoplay playsinline></video>
+        <video id="localVideo" class="local-video" autoplay playsinline muted></video>
+        
+        <div id="callAvatar" class="call-avatar">
+            <img src="<?= DEFAULT_AVATAR ?>" alt="">
+        </div>
+        
+        <div>
+            <div class="call-status" id="callStatus">Calling...</div>
+            <div class="call-timer" id="callTimer">00:00</div>
+        </div>
+        
+        <div class="call-controls">
+            <div class="call-btn" id="muteBtn" onclick="toggleMute()">
+                <i class="fa-solid fa-microphone"></i>
+            </div>
+            <div class="call-btn" id="videoBtn" onclick="toggleVideo()">
+                <i class="fa-solid fa-video"></i>
+            </div>
+            <div class="call-btn end" id="endCallBtn" onclick="endCall()">
+                <i class="fa-solid fa-phone"></i>
+            </div>
+        </div>
+    </div>
+    
+    <audio id="ringtone" loop style="display: none;">
+        <source src="data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//8kAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//sQZAAB8AAAAyQAAAAAAAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" type="audio/mp3">
+    </audio>
 
     <script>
-        // Configuration
-        const CONFIG = {
-            TMDB_API_KEY: '6cce5270f49eadc6dcef5fa7cc2050dd',
-            YOUTUBE_API_KEY: 'AIzaSyBo_MoLOas-pgBQQxeqOduKpEEuxvasbh8',
-            GIPHY_API_KEY: 'tH2BXmDEeZaOLVKx5epUQxvAsbVtKhnT'
-        };
-
-        // State
-        let state = {
-            currentTab: 'feed',
-            currentUser: 'movielover',
-            currentChat: null,
-            movies: [],
-            messages: [],
-            mediaRecorder: null,
-            audioChunks: [],
-            isRecording: false,
-            youtubePlayer: null
-        };
-
-        // Initialize
-        document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(() => {
-                document.getElementById('loading').classList.add('hidden');
-                document.getElementById('app').classList.remove('hidden');
-                initApp();
-            }, 1000);
-        });
-
-        function initApp() {
-            switchTab('feed');
-            setupEventListeners();
-            loadMovies();
-            loadStories();
-            updateUnreadCount();
-        }
-
-        function setupEventListeners() {
-            // Send message
-            document.getElementById('send-btn').addEventListener('click', sendMessage);
-            document.getElementById('message-input').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') sendMessage();
-            });
-            
-            // Voice recording
-            document.getElementById('voice-btn').addEventListener('mousedown', startRecording);
-            document.addEventListener('mouseup', stopRecording);
-            document.getElementById('cancel-recording').addEventListener('click', cancelRecording);
-            document.getElementById('send-recording').addEventListener('click', sendRecording);
-            
-            // Giphy search
-            document.getElementById('giphy-search').addEventListener('input', searchGiphy);
-            
-            // YouTube controls
-            document.getElementById('mute-btn').addEventListener('click', toggleMute);
-            document.getElementById('pause-btn').addEventListener('click', togglePause);
-            
-            // Voice player
-            document.getElementById('play-voice').addEventListener('click', playVoiceNote);
-            document.getElementById('pause-voice').addEventListener('click', pauseVoiceNote);
-            
-            // Setup voice recording
-            setupVoiceRecording();
-        }
-
-        function switchTab(tab) {
-            state.currentTab = tab;
-            
-            // Hide all tabs
-            document.querySelectorAll('.tab-content').forEach(el => {
-                el.classList.add('hidden');
-            });
-            
-            // Show selected tab
-            document.getElementById(tab + '-tab').classList.remove('hidden');
-            
-            // Update active button
-            document.querySelectorAll('.tab-btn').forEach(btn => {
-                btn.classList.remove('bg-gray-900');
-            });
-            event?.target?.closest('.tab-btn')?.classList.add('bg-gray-900');
-            
-            // Load tab-specific data
-            switch(tab) {
-                case 'feed':
-                    loadMovies();
-                    break;
-                case 'reels':
-                    loadYouTubeShorts();
-                    break;
-                case 'chat':
-                    if (!state.currentChat) {
-                        document.getElementById('chat-list').classList.remove('hidden');
-                        document.getElementById('active-chat').classList.add('hidden');
-                    }
-                    break;
-            }
-        }
-
-        // Movies
-        async function loadMovies() {
-            try {
-                const response = await fetch('api.php?action=get_movies');
-                state.movies = await response.json();
-                renderMovies();
-            } catch(error) {
-                // Fallback to sample data
-                state.movies = getSampleMovies();
-                renderMovies();
-            }
-        }
-
-        function getSampleMovies() {
-            return [
-                {
-                    id: 1,
-                    title: 'Dune: Part Two',
-                    overview: 'Paul Atreides unites with Chani and the Fremen while seeking revenge against the conspirators who destroyed his family.',
-                    poster_path: 'https://image.tmdb.org/t/p/w500/8b8R8l88Qje9dn9OE8PY05Nx1S8.jpg',
-                    vote_average: 8.4,
-                    release_date: '2024-03-01'
-                },
-                {
-                    id: 2,
-                    title: 'Godzilla x Kong: The New Empire',
-                    overview: 'The epic battle continues! The explosive showdown of Godzilla vs. Kong with new threats emerging.',
-                    poster_path: 'https://image.tmdb.org/t/p/w500/tMefBSflR6PGQLv7WvFPpKLZkyk.jpg',
-                    vote_average: 7.2,
-                    release_date: '2024-03-29'
-                },
-                {
-                    id: 3,
-                    title: 'Kung Fu Panda 4',
-                    overview: 'Po is gearing up to become the spiritual leader of his Valley of Peace, but needs to find a new Dragon Warrior.',
-                    poster_path: 'https://image.tmdb.org/t/p/w500/kDp1vUBnMpe8ak4rjgl3cLELqjU.jpg',
-                    vote_average: 7.1,
-                    release_date: '2024-03-08'
-                }
-            ];
-        }
-
-        function renderMovies() {
-            const container = document.getElementById('feed-container');
-            container.innerHTML = state.movies.map(movie => `
-                <div class="bg-gray-900 rounded-xl overflow-hidden mb-6 movie-card">
-                    <div class="relative">
-                        <img src="${movie.poster_path}" 
-                             alt="${movie.title}"
-                             class="w-full h-64 object-cover">
-                        <div class="absolute top-4 right-4">
-                            <button onclick="likeMovie(${movie.id})" class="like-btn p-2 bg-black/50 rounded-full">
-                                <i class="far fa-heart text-white text-xl"></i>
-                            </button>
-                        </div>
-                        <div class="absolute bottom-4 right-4">
-                            <button onclick="playTrailer('${movie.title}')" 
-                                    class="play-btn px-4 py-2 bg-red-600 rounded-full flex items-center space-x-2">
-                                <i class="fas fa-play"></i>
-                                <span>Trailer</span>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="p-4">
-                        <div class="flex justify-between items-start mb-2">
-                            <h3 class="text-xl font-bold">${movie.title}</h3>
-                            <span class="bg-yellow-500 text-black px-2 py-1 rounded text-sm font-bold">
-                                ${movie.vote_average.toFixed(1)} ★
-                            </span>
-                        </div>
-                        <p class="text-gray-300 mb-4">${movie.overview.substring(0, 150)}...</p>
-                        <div class="flex items-center justify-between text-sm text-gray-400">
-                            <span>${movie.release_date.substring(0, 4)}</span>
-                            <div class="flex items-center space-x-4">
-                                <button onclick="showComments(${movie.id})" class="hover:text-white">
-                                    <i class="far fa-comment"></i> Comment
-                                </button>
-                                <button onclick="shareMovie('${movie.title}')" class="hover:text-white">
-                                    <i class="far fa-share-square"></i> Share
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `).join('');
-            
-            // Add double-tap to like
-            document.querySelectorAll('.movie-card').forEach(card => {
-                card.addEventListener('dblclick', function(e) {
-                    const heart = document.createElement('div');
-                    heart.className = 'heart-animation absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2';
-                    heart.innerHTML = '<i class="fas fa-heart text-red-500 text-6xl"></i>';
-                    this.querySelector('.relative').appendChild(heart);
-                    
-                    setTimeout(() => heart.remove(), 800);
-                    
-                    const movieId = this.querySelector('.like-btn').getAttribute('onclick').match(/\d+/)[0];
-                    likeMovie(movieId);
-                });
-            });
-        }
-
-        // Stories
-        function loadStories() {
-            const stories = [
-                {username: 'cinemafan', avatar: null},
-                {username: 'filmcritic', avatar: null},
-                {username: 'movielover', avatar: null},
-                {username: 'moviebuff', avatar: null},
-                {username: 'reelviewer', avatar: null}
-            ];
-            
-            const container = document.getElementById('stories-container');
-            container.innerHTML = stories.map(story => `
-                <div class="flex flex-col items-center cursor-pointer" onclick="viewStory('${story.username}')">
-                    <div class="story-ring">
-                        <div class="w-16 h-16 rounded-full bg-gradient-to-r from-blue-500 to-purple-500 flex items-center justify-center">
-                            <span class="text-white font-bold text-xl">${story.username.charAt(0)}</span>
-                        </div>
-                    </div>
-                    <span class="text-xs mt-1">${story.username}</span>
-                </div>
-            `).join('');
-        }
-
-        // Chat
-        function openChat(room) {
-            state.currentChat = room;
-            document.getElementById('chat-list').classList.add('hidden');
-            document.getElementById('active-chat').classList.remove('hidden');
-            document.getElementById('chat-room-name').textContent = 
-                room === 'public' ? 'Public Chat Room' : 
-                room === 'cinema_fans' ? 'Cinema Fans' : room;
-            
-            loadMessages(room);
-        }
-
-        function closeChat() {
-            state.currentChat = null;
-            document.getElementById('active-chat').classList.add('hidden');
-            document.getElementById('chat-list').classList.remove('hidden');
-        }
-
-        async function loadMessages(room) {
-            try {
-                const response = await fetch(`api.php?action=refresh&room=${room}`);
-                const messages = await response.json();
-                renderMessages(messages);
-            } catch(error) {
-                // Sample messages
-                const messages = [
-                    {id: 1, username: 'movielover', message: 'Anyone seen the new movie?', created_at: new Date().toISOString()},
-                    {id: 2, username: 'cinemafan', message: 'Yes, it was amazing!', created_at: new Date().toISOString()},
-                    {id: 3, username: 'filmcritic', message: 'The cinematography was stunning', created_at: new Date().toISOString()}
-                ];
-                renderMessages(messages);
-            }
-        }
-
-        function renderMessages(messages) {
-            const container = document.getElementById('messages-container');
-            container.innerHTML = messages.map(msg => `
-                <div class="${msg.username === state.currentUser ? 'text-right' : 'text-left'}">
-                    <div class="inline-block max-w-xs lg:max-w-md rounded-lg p-3 
-                                ${msg.username === state.currentUser ? 
-                                  'bg-blue-600 text-white rounded-br-none' : 
-                                  'bg-gray-800 rounded-bl-none'}">
-                        <div class="font-bold text-sm">${msg.username}</div>
-                        <p>${msg.message}</p>
-                        <div class="text-xs mt-1 opacity-70">
-                            ${new Date(msg.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                        </div>
-                    </div>
-                </div>
-            `).join('');
-            
-            container.scrollTop = container.scrollHeight;
-        }
-
+        // ==================== CONFIGURATION ====================
+        const userId = '<?= DEFAULT_USER_ID ?>';
+        const chatId = '<?= $chat_id ?>';
+        let selectedMessageId = null;
+        let selectedMessageType = null;
+        let selectedMediaUrl = null;
+        
+        // ==================== MESSAGING ====================
+        
+        // Send text message
         async function sendMessage() {
-            const input = document.getElementById('message-input');
+            const input = document.getElementById('messageInput');
             const message = input.value.trim();
             
-            if (!message) return;
+            if (!message || !chatId) return;
             
-            try {
-                const formData = new FormData();
-                formData.append('action', 'send');
-                formData.append('username', state.currentUser);
-                formData.append('message', message);
-                formData.append('room', state.currentChat || 'public');
-                
-                await fetch('api.php', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                input.value = '';
-                loadMessages(state.currentChat || 'public');
-            } catch(error) {
-                // Add locally
-                const messages = JSON.parse(localStorage.getItem('local_messages') || '[]');
-                messages.push({
-                    id: Date.now(),
-                    username: state.currentUser,
+            input.value = '';
+            
+            const response = await fetch('?', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
                     message: message,
+                    receiver_id: chatId
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                // Add message to UI
+                appendMessage({
+                    content: message,
+                    type: 'text',
+                    sender_id: userId,
                     created_at: new Date().toISOString()
                 });
-                localStorage.setItem('local_messages', JSON.stringify(messages));
-                input.value = '';
-                loadMessages(state.currentChat || 'public');
             }
         }
-
-        // YouTube Shorts/Reels
-        async function loadYouTubeShorts() {
-            const container = document.getElementById('reels-container');
-            container.innerHTML = `
-                <div class="h-full snap-start flex items-center justify-center bg-black">
-                    <div class="text-center p-8">
-                        <i class="fas fa-play-circle text-6xl text-gray-600 mb-4"></i>
-                        <h3 class="text-2xl font-bold mb-2">Movie Shorts</h3>
-                        <p class="text-gray-400 mb-6">Watch trending movie clips and trailers</p>
-                        <button onclick="playTrailer('movie clips')" class="px-6 py-3 bg-red-600 rounded-full">
-                            <i class="fas fa-play mr-2"></i> Play Demo
-                        </button>
-                    </div>
-                </div>
-            `;
-        }
-
-        function toggleMute() {
-            const btn = document.getElementById('mute-btn');
-            const icon = btn.querySelector('i');
-            if (icon.classList.contains('fa-volume-up')) {
-                icon.classList.replace('fa-volume-up', 'fa-volume-mute');
-            } else {
-                icon.classList.replace('fa-volume-mute', 'fa-volume-up');
-            }
-        }
-
-        function togglePause() {
-            const btn = document.getElementById('pause-btn');
-            const icon = btn.querySelector('i');
-            if (icon.classList.contains('fa-pause')) {
-                icon.classList.replace('fa-pause', 'fa-play');
-            } else {
-                icon.classList.replace('fa-play', 'fa-pause');
-            }
-        }
-
-        // Voice Messages
-        async function setupVoiceRecording() {
-            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    state.mediaRecorder = new MediaRecorder(stream);
-                    
-                    state.mediaRecorder.ondataavailable = event => {
-                        if (event.data.size > 0) {
-                            state.audioChunks.push(event.data);
-                        }
-                    };
-                    
-                    state.mediaRecorder.onstop = () => {
-                        const audioBlob = new Blob(state.audioChunks, { type: 'audio/webm' });
-                        state.audioBlob = audioBlob;
-                    };
-                } catch(error) {
-                    console.log('Voice recording not available');
-                }
-            }
-        }
-
-        function startRecording() {
-            if (!state.mediaRecorder) {
-                alert('Microphone access required for voice messages');
-                return;
-            }
+        
+        // Send media
+        async function sendMedia(input) {
+            const file = input.files[0];
+            if (!file || !chatId) return;
             
-            state.isRecording = true;
-            state.audioChunks = [];
-            document.getElementById('voice-recording-ui').classList.remove('hidden');
-            state.mediaRecorder.start();
-        }
-
-        function stopRecording() {
-            if (state.isRecording && state.mediaRecorder) {
-                state.mediaRecorder.stop();
-                state.isRecording = false;
-            }
-        }
-
-        function cancelRecording() {
-            state.isRecording = false;
-            state.audioChunks = [];
-            document.getElementById('voice-recording-ui').classList.add('hidden');
-        }
-
-        function sendRecording() {
-            if (state.audioBlob) {
-                alert('Voice message sent! (In a real app, this would upload to server)');
-                document.getElementById('voice-recording-ui').classList.add('hidden');
-                state.audioBlob = null;
-            }
-        }
-
-        // Giphy
-        async function searchGiphy() {
-            const query = document.getElementById('giphy-search').value;
-            if (!query) return;
+            const formData = new FormData();
+            formData.append('media', file);
+            formData.append('receiver_id', chatId);
             
-            try {
-                const response = await fetch(`https://api.giphy.com/v1/gifs/search?api_key=${CONFIG.GIPHY_API_KEY}&q=${encodeURIComponent(query)}&limit=12`);
-                const data = await response.json();
-                renderGiphyResults(data.data);
-            } catch(error) {
-                console.log('Giphy search failed');
-            }
-        }
-
-        function renderGiphyResults(gifs) {
-            const container = document.getElementById('giphy-results');
-            container.innerHTML = gifs.map(gif => `
-                <img src="${gif.images.fixed_height.url}" 
-                     class="w-full h-24 object-cover rounded cursor-pointer"
-                     onclick="sendGif('${gif.images.fixed_height.url}')">
-            `).join('');
-        }
-
-        function toggleGiphy() {
-            const drawer = document.getElementById('giphy-drawer');
-            drawer.classList.toggle('hidden');
-            if (!drawer.classList.contains('hidden')) {
-                searchGiphy();
-            }
-        }
-
-        function sendGif(gifUrl) {
-            alert(`GIF sent: ${gifUrl}`);
-            toggleGiphy();
-        }
-
-        // Movie Trailers
-        async function playTrailer(movieTitle) {
-            try {
-                const response = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(movieTitle + ' trailer')}&key=${CONFIG.YOUTUBE_API_KEY}&type=video&maxResults=1`);
-                const data = await response.json();
-                
-                if (data.items && data.items.length > 0) {
-                    const videoId = data.items[0].id.videoId;
-                    showTrailer(videoId);
-                } else {
-                    showTrailer('Way9Dexny3w'); // Default Dune 2 trailer
-                }
-            } catch(error) {
-                showTrailer('Way9Dexny3w'); // Fallback
-            }
-        }
-
-        function showTrailer(videoId) {
-            const modal = document.getElementById('trailer-modal');
-            const iframe = document.getElementById('youtube-iframe');
+            const response = await fetch('?', {
+                method: 'POST',
+                body: formData
+            });
             
-            iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&controls=1&modestbranding=1&rel=0`;
-            modal.classList.remove('hidden');
-        }
-
-        function closeTrailer() {
-            const modal = document.getElementById('trailer-modal');
-            const iframe = document.getElementById('youtube-iframe');
+            const result = await response.json();
             
-            iframe.src = '';
-            modal.classList.add('hidden');
-        }
-
-        // Profile
-        function editProfile() {
-            document.getElementById('edit-profile-form').classList.remove('hidden');
-        }
-
-        function cancelEdit() {
-            document.getElementById('edit-profile-form').classList.add('hidden');
-        }
-
-        function saveProfile() {
-            const newUsername = document.getElementById('edit-username').value;
-            const newBio = document.getElementById('edit-bio').value;
-            
-            state.currentUser = newUsername;
-            document.getElementById('profile-username').textContent = '@' + newUsername;
-            document.getElementById('profile-bio').textContent = newBio;
-            
-            cancelEdit();
-            alert('Profile updated! (Changes saved locally)');
-        }
-
-        function uploadAvatar() {
-            alert('In a real app, this would open file picker for avatar upload');
-        }
-
-        function showSettings() {
-            alert('Settings panel would open here');
-        }
-
-        // Utility functions
-        function likeMovie(movieId) {
-            console.log('Liked movie:', movieId);
-            // In real app, send to server
-        }
-
-        function showComments(movieId) {
-            alert(`Comments for movie ${movieId} would appear here`);
-        }
-
-        function shareMovie(title) {
-            if (navigator.share) {
-                navigator.share({
-                    title: title,
-                    text: 'Check out this movie on Moviez Ultra!',
-                    url: window.location.href
+            if (result.success) {
+                appendMessage({
+                    media_url: result.url,
+                    type: 'image',
+                    sender_id: userId,
+                    created_at: new Date().toISOString()
                 });
+            }
+            
+            input.value = '';
+        }
+        
+        // Append message to UI
+        function appendMessage(msg) {
+            const container = document.getElementById('messagesContainer');
+            if (!container) return;
+            
+            const div = document.createElement('div');
+            div.className = `message ${msg.sender_id === userId ? 'sent' : 'received'}`;
+            div.dataset.id = msg.id || Date.now();
+            
+            if (msg.type === 'image') {
+                div.innerHTML = `<img src="${msg.media_url}" class="message-image" onclick="window.open(this.src)">`;
+            } else if (msg.type === 'voice') {
+                div.innerHTML = `
+                    <div class="message-voice">
+                        <div class="voice-play-btn" onclick="playVoice(this, '${msg.media_url}')">
+                            <i class="fa-solid fa-play"></i>
+                        </div>
+                        <div class="voice-wave"></div>
+                        <span>0:30</span>
+                    </div>
+                `;
             } else {
-                alert(`Share: ${title}`);
+                div.textContent = msg.content;
+            }
+            
+            const timeDiv = document.createElement('div');
+            timeDiv.className = 'message-time';
+            const date = msg.created_at ? new Date(msg.created_at) : new Date();
+            timeDiv.innerHTML = `${date.getHours().toString().padStart(2,'0')}:${date.getMinutes().toString().padStart(2,'0')}`;
+            if (msg.sender_id === userId) {
+                timeDiv.innerHTML += ' <i class="fa-regular fa-check-circle"></i>';
+            }
+            div.appendChild(timeDiv);
+            
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        // ==================== VOICE RECORDING ====================
+        
+        let mediaRecorder;
+        let audioChunks = [];
+        let recordingInterval;
+        let recordingSeconds = 0;
+        
+        async function startVoiceRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    const formData = new FormData();
+                    formData.append('voice', audioBlob);
+                    formData.append('receiver_id', chatId);
+                    
+                    const response = await fetch('?', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        appendMessage({
+                            media_url: result.url,
+                            type: 'voice',
+                            sender_id: userId,
+                            created_at: new Date().toISOString()
+                        });
+                    }
+                    
+                    audioChunks = [];
+                    document.getElementById('recordingIndicator').style.display = 'none';
+                    document.getElementById('inputWrapper').style.display = 'flex';
+                    recordingSeconds = 0;
+                    
+                    // Stop all tracks
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                mediaRecorder.start();
+                document.getElementById('voiceBtn').style.color = '#ff3b30';
+                document.getElementById('inputWrapper').style.display = 'none';
+                document.getElementById('recordingIndicator').style.display = 'flex';
+                
+                recordingInterval = setInterval(() => {
+                    recordingSeconds++;
+                    const mins = Math.floor(recordingSeconds / 60);
+                    const secs = recordingSeconds % 60;
+                    document.getElementById('recordingTime').textContent = 
+                        `${mins}:${secs.toString().padStart(2, '0')}`;
+                }, 1000);
+                
+            } catch (err) {
+                alert('Microphone access required for voice notes');
             }
         }
-
-        function viewStory(username) {
-            alert(`Viewing ${username}'s story`);
+        
+        function stopVoiceRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                clearInterval(recordingInterval);
+                document.getElementById('voiceBtn').style.color = '#888';
+            }
         }
-
-        function updateUnreadCount() {
-            // Simulate unread messages
-            const count = Math.floor(Math.random() * 5);
-            const badge = document.getElementById('unread-count');
-            if (count > 0) {
-                badge.textContent = count;
-                badge.classList.remove('hidden');
+        
+        // Play voice message
+        function playVoice(btn, url) {
+            const audio = new Audio(url);
+            audio.play();
+            btn.innerHTML = '<i class="fa-solid fa-pause"></i>';
+            
+            audio.onended = () => {
+                btn.innerHTML = '<i class="fa-solid fa-play"></i>';
+            };
+        }
+        
+        // ==================== CONTEXT MENU ====================
+        
+        function showContextMenu(event, messageId, type, mediaUrl) {
+            event.preventDefault();
+            
+            selectedMessageId = messageId;
+            selectedMessageType = type;
+            selectedMediaUrl = mediaUrl;
+            
+            const menu = document.getElementById('contextMenu');
+            menu.style.display = 'block';
+            menu.style.left = event.pageX + 'px';
+            menu.style.top = event.pageY + 'px';
+            
+            // Show/hide download option
+            document.getElementById('downloadOption').style.display = 
+                (type === 'image' || type === 'voice') ? 'flex' : 'none';
+            
+            setTimeout(() => {
+                document.addEventListener('click', hideContextMenu);
+            }, 100);
+        }
+        
+        function hideContextMenu() {
+            document.getElementById('contextMenu').style.display = 'none';
+            document.removeEventListener('click', hideContextMenu);
+        }
+        
+        async function deleteMessage() {
+            if (!selectedMessageId) return;
+            
+            await fetch('?', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ delete_message: true, message_id: selectedMessageId })
+            });
+            
+            document.querySelector(`[data-id="${selectedMessageId}"]`).remove();
+            hideContextMenu();
+        }
+        
+        function copyMessage() {
+            const msgElement = document.querySelector(`[data-id="${selectedMessageId}"]`);
+            const text = msgElement?.childNodes[0]?.textContent;
+            if (text) {
+                navigator.clipboard.writeText(text);
+            }
+            hideContextMenu();
+        }
+        
+        function downloadMedia() {
+            if (selectedMediaUrl) {
+                window.open(selectedMediaUrl, '_blank');
+            }
+            hideContextMenu();
+        }
+        
+        function openEmojiPicker() {
+            const menu = document.getElementById('contextMenu');
+            const picker = document.getElementById('emojiPicker');
+            
+            menu.style.display = 'none';
+            picker.style.display = 'flex';
+            picker.style.left = menu.style.left;
+            picker.style.top = (parseInt(menu.style.top) - 60) + 'px';
+        }
+        
+        async function addReaction(emoji) {
+            if (!selectedMessageId) return;
+            
+            await fetch('?', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    react: true, 
+                    message_id: selectedMessageId,
+                    emoji: emoji
+                })
+            });
+            
+            hideContextMenu();
+            document.getElementById('emojiPicker').style.display = 'none';
+        }
+        
+        // ==================== WEBRTC CALLS ====================
+        
+        let peerConnection;
+        let localStream;
+        let callTimer;
+        let callSeconds = 0;
+        let isCallActive = false;
+        
+        const servers = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+        
+        async function startCall(type, partnerId) {
+            document.getElementById('callModal').classList.add('active');
+            document.getElementById('callStatus').textContent = type === 'audio' ? 'Calling...' : 'Video calling...';
+            
+            if (type === 'video') {
+                try {
+                    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    document.getElementById('localVideo').srcObject = localStream;
+                    document.getElementById('localVideo').classList.add('active');
+                    document.getElementById('callAvatar').style.display = 'none';
+                } catch (err) {
+                    console.log('Video failed, using audio only');
+                }
             } else {
-                badge.classList.add('hidden');
+                try {
+                    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                } catch (err) {
+                    alert('Microphone access required for calls');
+                    endCall();
+                    return;
+                }
+            }
+            
+            // Play ringtone
+            document.getElementById('ringtone').play();
+            
+            // Simulate call acceptance after 3 seconds (in real app, this would be via signaling)
+            setTimeout(() => {
+                if (isCallActive) return;
+                acceptCall();
+            }, 3000);
+        }
+        
+        function acceptCall() {
+            document.getElementById('ringtone').pause();
+            document.getElementById('callStatus').textContent = 'Connected';
+            isCallActive = true;
+            
+            // Start timer
+            callTimer = setInterval(() => {
+                callSeconds++;
+                const mins = Math.floor(callSeconds / 60);
+                const secs = callSeconds % 60;
+                document.getElementById('callTimer').textContent = 
+                    `${mins.toString().padStart(2,'0')}:${secs.toString().padStart(2,'0')}`;
+            }, 1000);
+        }
+        
+        function endCall() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            if (peerConnection) {
+                peerConnection.close();
+            }
+            
+            clearInterval(callTimer);
+            callSeconds = 0;
+            isCallActive = false;
+            
+            document.getElementById('callModal').classList.remove('active');
+            document.getElementById('ringtone').pause();
+            document.getElementById('localVideo').classList.remove('active');
+            document.getElementById('callAvatar').style.display = 'block';
+            document.getElementById('callTimer').textContent = '00:00';
+        }
+        
+        function toggleMute() {
+            if (localStream) {
+                const audioTrack = localStream.getAudioTracks()[0];
+                if (audioTrack) {
+                    audioTrack.enabled = !audioTrack.enabled;
+                    document.getElementById('muteBtn').style.background = 
+                        audioTrack.enabled ? '' : '#ff3b30';
+                }
             }
         }
-
-        // Auto-update chat
-        setInterval(() => {
-            if (state.currentTab === 'chat' && state.currentChat) {
-                loadMessages(state.currentChat);
+        
+        function toggleVideo() {
+            if (localStream) {
+                const videoTrack = localStream.getVideoTracks()[0];
+                if (videoTrack) {
+                    videoTrack.enabled = !videoTrack.enabled;
+                    document.getElementById('localVideo').style.display = 
+                        videoTrack.enabled ? 'block' : 'none';
+                    document.getElementById('videoBtn').style.background = 
+                        videoTrack.enabled ? '' : '#ff3b30';
+                }
             }
-            updateUnreadCount();
-        }, 5000);
+        }
+        
+        // ==================== MODALS ====================
+        
+        function openNewChatModal() {
+            document.getElementById('newChatModal').classList.add('active');
+        }
+        
+        function closeNewChatModal() {
+            document.getElementById('newChatModal').classList.remove('active');
+        }
+        
+        function startChat(userId) {
+            window.location.href = '?chat=' + userId;
+        }
+        
+        // Search users
+        function searchUsers(query) {
+            // In a real app, this would search via API
+            // For now, just filter the existing list
+            const items = document.querySelectorAll('.user-item');
+            items.forEach(item => {
+                const name = item.querySelector('.user-name').textContent.toLowerCase();
+                if (name.includes(query.toLowerCase())) {
+                    item.style.display = 'flex';
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+        }
+        
+        // ==================== UTILITIES ====================
+        
+        // Scroll to bottom on load
+        window.onload = function() {
+            const container = document.getElementById('messagesContainer');
+            if (container) {
+                container.scrollTop = container.scrollHeight;
+            }
+        };
+        
+        // Auto-refresh messages every 3 seconds (simulate real-time)
+        if (chatId) {
+            setInterval(() => {
+                location.reload();
+            }, 3000);
+        }
     </script>
 </body>
 </html>
